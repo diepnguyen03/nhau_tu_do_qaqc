@@ -187,11 +187,11 @@ body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);co
 .sh-chip.r{color:#ffb3ac;background:rgba(203,59,59,.22)}
 .sh-stats{display:flex;gap:22px;flex-wrap:wrap}
 .sh-stat{text-align:center}
-.sh-stat .v{font-size:28px;font-weight:800;line-height:1}
-.sh-stat .l{font-size:11px;color:#aaa;margin-top:4px}
+.sh-stat .v{font-size:28px;font-weight:800;line-height:1;color:#F5E6C0}
+.sh-stat .l{font-size:11px;color:#c8d4e0;margin-top:4px;font-weight:600}
 .sh-rank{background:rgba(255,255,255,.12);border-radius:12px;padding:12px 18px;text-align:center}
-.sh-rank .rv{font-size:28px;font-weight:800;color:var(--orange)}
-.sh-rank .rl{font-size:11px;color:#bbb}
+.sh-rank .rv{font-size:28px;font-weight:800;color:#FFD166}
+.sh-rank .rl{font-size:11px;color:#dde6f0;margin-top:2px}
 /* ── DETAIL BY CHECKLIST ── */
 .ck-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px}
 .ck-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--warm);cursor:pointer;user-select:none}
@@ -330,11 +330,23 @@ body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);co
   <!-- Band summary -->
   <div class="band-grid" id="bandGrid"></div>
 
-  <!-- Trend + Alert -->
-  <div class="grid2 mb" style="margin-bottom:18px">
+  <!-- Trend row: distribution + min-max + alert -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:18px">
     <div class="panel">
-      <div class="ph"><div class="pt">Xu hướng Final QC Score theo cơ sở</div><div class="ps">3 tháng gần nhất</div></div>
-      <div style="height:240px;position:relative"><canvas id="trendChart"></canvas></div>
+      <div class="ph">
+        <div class="pt">Phân bổ xếp hạng theo tháng</div>
+        <div class="ps">Số cơ sở ở từng hạng — 3 tháng gần nhất</div>
+      </div>
+      <div id="distLegend" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;font-size:11px;color:var(--soft)"></div>
+      <div style="height:190px;position:relative"><canvas id="distChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="ph">
+        <div class="pt">TB hệ thống + dải min–max</div>
+        <div class="ps">Điểm TB · vùng dao động toàn bộ cơ sở</div>
+      </div>
+      <div id="mmLegend" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;font-size:11px;color:var(--soft)"></div>
+      <div style="height:190px;position:relative"><canvas id="mmChart"></canvas></div>
     </div>
     <div class="panel" style="border-left:4px solid var(--red)">
       <div class="ph"><div class="pt">Cảnh báo cần xử lý</div><div class="ps" id="alertSum">—</div></div>
@@ -491,6 +503,12 @@ body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);co
 
 <script>
 // ── Hash helper (deterministic pseudo-random from string) ──
+function heroColor(score){
+  if(score>=90) return '#F5C97A';
+  if(score>=80) return '#F5C97A';
+  if(score>=70) return '#F5C97A';
+  return '#F28B8B';
+}
 function h(str){
   var v = 2166136261;
   for(var i = 0; i < str.length; i++){
@@ -659,20 +677,90 @@ function renderCEO(){
   });
   document.getElementById('bandGrid').innerHTML=html;
 
-  // Trend chart
-  var labels=['Tháng 3','Tháng 4','Tháng 5'];
-  var trends=active.slice().sort(function(a,b){return finalScore(b)-finalScore(a);}).slice(0,5);
-  var colors=['#168A4C','#2563A8','#C8862B','#CB3B3B','#9333EA'];
-  destroyChart('trend');
-  charts.trend=new Chart(document.getElementById('trendChart'),{
-    type:'line',
-    data:{labels:labels,datasets:trends.map(function(s,i){
-      var sc=finalScore(s);
-      return {label:s.name.split('–')[0].split('(')[0].trim(),data:[Math.max(60,sc-8-(i*2)),Math.max(62,sc-4-(i*1)),sc],
-        borderColor:colors[i%colors.length],backgroundColor:'transparent',borderWidth:2,pointRadius:4,tension:0.3};
-    }).concat([{label:'Mục tiêu 90%',data:[90,90,90],borderColor:'#2E4F3C',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false}])},
-    options:{maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}},scales:{y:{min:50,max:100,ticks:{callback:function(v){return v+'%';},font:{size:10}},grid:{color:'#F0F2F6'}},x:{grid:{display:false},ticks:{font:{size:11}}}}}
+  // ── Chart A: Distribution shift (stacked bar) ──
+  var distMonths = ['Tháng 3','Tháng 4','Tháng 5'];
+  var allActiveRows = rows.slice();
+  var distBands = [
+    {k:'ex',l:'Xuất sắc >90%', c:'#168A4C'},
+    {k:'gt',l:'Rất tốt 80–90%',c:'#2563A8'},
+    {k:'ok',l:'Tốt 76–80%',    c:'#C17A0B'},
+    {k:'at',l:'Đạt 70–76%',    c:'#D4A84B'},
+    {k:'lt',l:'Chưa đạt/LTY',  c:'#CB3B3B'}
+  ];
+  var TOTAL_CS = 80;
+  function distCount(delta){
+    var raw={ex:0,gt:0,ok:0,at:0,lt:0};
+    allActiveRows.forEach(function(r){
+      if(r.checks===0) return;
+      var sc=Math.max(0,Math.min(100,finalScore(r)+delta));
+      var lty=delta<-3?r.lty+(h(r.id+'lty'+delta)%2):r.lty;
+      var band=bandOf(sc,lty>0);
+      // lty cơ sở tính vào 'lt' (Chưa đạt) trong biểu đồ phân bổ
+      if(band==='lty') band='lt';
+      raw[band]++;
+    });
+    // Scale lên 80 cơ sở giữ nguyên tỷ lệ
+    var total=Object.keys(raw).reduce(function(s,k){return s+raw[k];},0);
+    if(total===0) return raw;
+    var cnt={ex:0,gt:0,ok:0,at:0,lt:0}, keys=['ex','gt','ok','at','lt'], assigned=0;
+    for(var i=0;i<keys.length-1;i++){
+      cnt[keys[i]]=Math.round(raw[keys[i]]/total*TOTAL_CS);
+      assigned+=cnt[keys[i]];
+    }
+    cnt[keys[keys.length-1]]=TOTAL_CS-assigned; // last band absorbs rounding
+    return cnt;
+  }
+  var distData=[distCount(-6),distCount(-3),distCount(0)];
+  document.getElementById('distLegend').innerHTML=distBands.map(function(b){
+    return '<span style="display:flex;align-items:center;gap:4px">'
+      +'<span style="width:9px;height:9px;border-radius:2px;background:'+b.c+';flex-shrink:0"></span>'
+      +b.l+'</span>';
+  }).join('');
+  destroyChart('dist');
+  charts.dist=new Chart(document.getElementById('distChart'),{
+    type:'bar',
+    data:{labels:distMonths,datasets:distBands.map(function(b){
+      return {label:b.l,data:distData.map(function(m){return m[b.k];}),
+        backgroundColor:b.c,stack:'s',borderRadius:3,barThickness:36};
+    })},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+c.parsed.y+' CS';}}}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{font:{size:11}}},
+        y:{stacked:true,ticks:{stepSize:20,font:{size:10},callback:function(v){return v+' CS';}},grid:{color:'#F0F2F6'}}}}
   });
+
+  // ── Chart B: TB hệ thống + min–max band ──
+  function mmCalc(delta,fn){
+    var sc=allActiveRows.filter(function(r){return r.checks>0;})
+      .map(function(r){return Math.max(0,Math.min(100,finalScore(r)+delta));});
+    return sc.length?fn(sc):0;
+  }
+  var mmAvg=[-6,-3,0].map(function(d){return Math.round(mmCalc(d,function(a){return a.reduce(function(x,y){return x+y;},0)/a.length;}));});
+  var mmMin=[-6,-3,0].map(function(d){return mmCalc(d,function(a){return Math.min.apply(null,a);});});
+  var mmMax=[-6,-3,0].map(function(d){return mmCalc(d,function(a){return Math.max.apply(null,a);});});
+  document.getElementById('mmLegend').innerHTML=
+    '<span style="display:flex;align-items:center;gap:4px"><span style="width:9px;height:9px;border-radius:2px;background:#2E4F3C;flex-shrink:0"></span>TB hệ thống</span>'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:16px;height:8px;background:rgba(46,79,60,.15);border-radius:2px;flex-shrink:0"></span>Vùng min–max</span>'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:16px;height:0;border-top:2px dashed #CB3B3B;flex-shrink:0;display:inline-block"></span>KPI 70%</span>'
+    +'<span style="display:flex;align-items:center;gap:4px"><span style="width:16px;height:0;border-top:2px dashed #2563A8;flex-shrink:0;display:inline-block"></span>Mục tiêu 90%</span>';
+  destroyChart('mm');
+  charts.mm=new Chart(document.getElementById('mmChart'),{
+    type:'line',
+    data:{labels:distMonths,datasets:[
+      {label:'Max',data:mmMax,borderColor:'transparent',backgroundColor:'rgba(46,79,60,.12)',fill:'+1',pointRadius:0,tension:0.3},
+      {label:'Min',data:mmMin,borderColor:'transparent',backgroundColor:'rgba(46,79,60,.12)',fill:false,pointRadius:0,tension:0.3},
+      {label:'TB hệ thống',data:mmAvg,borderColor:'#2E4F3C',backgroundColor:'#2E4F3C',
+        borderWidth:2.5,pointRadius:5,pointBackgroundColor:'#2E4F3C',pointBorderColor:'#fff',pointBorderWidth:2,tension:0.3,fill:false},
+      {label:'Mục tiêu 90%',data:[90,90,90],borderColor:'#2563A8',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false},
+      {label:'Ngưỡng KPI 70%',data:[70,70,70],borderColor:'#CB3B3B',borderDash:[4,4],borderWidth:1.5,pointRadius:0,fill:false}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{filter:function(i){return i.datasetIndex===2;},
+        callbacks:{label:function(c){return 'TB: '+c.parsed.y+'%';}}}},
+      scales:{x:{grid:{display:false},ticks:{font:{size:11}}},
+        y:{min:50,max:100,ticks:{callback:function(v){return v+'%';},font:{size:10}},grid:{color:'#F0F2F6'}}}}
+  });
+
 
   // Alerts
   var alerts=[];
@@ -850,15 +938,15 @@ function renderStore(){
     + (!s.capa_ok     ? '<span class="sh-chip r">CAPA quá hạn</span>' : '')
     + '</div></div>'
     + '<div class="sh-stats">'
-    + '<div class="sh-stat"><div class="v" style="color:' + bandColor(s.qc_bep,false) + '">' + s.qc_bep + '%</div><div class="l">QC Bếp (50%)</div></div>'
-    + '<div class="sh-stat"><div class="v" style="color:' + bandColor(s.qc_ban,false) + '">' + s.qc_ban + '%</div><div class="l">QC Bàn (30%)</div></div>'
-    + '<div class="sh-stat"><div class="v" style="color:' + bandColor(s.ms_dv,false)  + '">' + s.ms_dv  + '%</div><div class="l">MS Dịch Vụ (20%)</div></div>'
-    + '<div class="sh-stat"><div class="v" style="color:' + bc + '">' + sc + '%</div><div class="l">Final QC Score</div></div>'
+    + '<div class="sh-stat"><div class="v">' + s.qc_bep + '%</div><div class="l">QC Bếp (50%)</div></div>'
+    + '<div class="sh-stat"><div class="v">' + s.qc_ban + '%</div><div class="l">QC Bàn (30%)</div></div>'
+    + '<div class="sh-stat"><div class="v">' + s.ms_dv  + '%</div><div class="l">MS Dịch Vụ (20%)</div></div>'
+    + '<div class="sh-stat"><div class="v">' + sc + '%</div><div class="l">Final QC Score</div></div>'
     + '</div>'
     + '<div class="sh-rank">'
     + '<div class="rv">#' + rank + '</div>'
     + '<div class="rl">/ ' + tot + ' cơ sở</div>'
-    + '<div style="margin-top:6px"><span style="background:' + bc + '22;color:' + bc + ';font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px">' + bm.label + ' · ' + kpiPct(s) + ' KPI</span></div>'
+    + '<div style="margin-top:6px"><span style="background:rgba(255,255,255,.18);color:#fff;font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px">' + bm.label + ' · ' + kpiPct(s) + ' KPI</span></div>'
     + '</div>';
   document.getElementById('storeHero').innerHTML = heroHtml;
 
